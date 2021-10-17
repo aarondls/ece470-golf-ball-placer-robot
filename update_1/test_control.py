@@ -118,7 +118,7 @@ time.sleep(2)
 # attempt to read prox sensor
 print('Attempting to read prox sensor')
 print("Boolean represents if object is detected, and the three value array are the xyz coordinates of detected object")
-for i in range(0, 10):
+for i in range(0, 15):
     detected_state, detected_point = GetProxSensorDist(handle_arr)
     print(detected_state, detected_point)
     time.sleep(1)
