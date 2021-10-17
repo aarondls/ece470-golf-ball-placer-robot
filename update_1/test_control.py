@@ -103,7 +103,6 @@ result, sphere_handle = sim.simxLoadModel(clientID, '/home/ur3/Documents/project
 if result != sim.simx_return_ok:
 	sys.exit('Failed to get object handle for instantiated sphere')
 
-# Attempt to set joint angles
 desired_joint_angles = np.array([0,0,-0.5*np.pi,0.5*np.pi,-0.5*np.pi,-0.5*np.pi])
 SetJointAngles(handle_arr, desired_joint_angles)
 
