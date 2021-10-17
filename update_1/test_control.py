@@ -2,6 +2,7 @@ import sim # access all the VREP elements
 import sys # for stopping at errors
 import time # for time/sleeping
 import numpy as np
+import os
 
 #### Helper functions
 
@@ -89,6 +90,7 @@ sim.simxSynchronous(clientID, True)
 
 # Start simulation
 # Note not to start simulation, but only run simExtRemoteApiStart (19999) on every new coppelia sim window
+print("Starting simulation")
 sim.simxStartSimulation(clientID, sim.simx_opmode_oneshot)
 
 # Wait for things a bit
@@ -99,10 +101,14 @@ time.sleep(2)
 #### Do things in simulation
 
 # Attempt to spawn sphere
-result, sphere_handle = sim.simxLoadModel(clientID, '/home/ur3/Documents/project_workspace/sphere_sample.ttm', 0, sim.simx_opmode_oneshot_wait)
+print("Spawning golf ball")
+sphere_path = os.path.abspath(os.getcwd()) + '/sphere_sample.ttm'
+result, sphere_handle = sim.simxLoadModel(clientID, sphere_path, 0, sim.simx_opmode_oneshot_wait)
 if result != sim.simx_return_ok:
 	sys.exit('Failed to get object handle for instantiated sphere')
 
+# Attempt to move UR3 to a set of joint angles
+print("Moving UR3 robot arm")
 desired_joint_angles = np.array([0,0,-0.5*np.pi,0.5*np.pi,-0.5*np.pi,-0.5*np.pi])
 SetJointAngles(handle_arr, desired_joint_angles)
 
@@ -111,7 +117,7 @@ time.sleep(2)
 
 # attempt to read prox sensor
 print('Attempting to read prox sensor')
-
+print("Boolean represents if object is detected, and the three value array are the xyz coordinates of detected object")
 for i in range(0, 10):
     detected_state, detected_point = GetProxSensorDist(handle_arr)
     print(detected_state, detected_point)
@@ -124,6 +130,7 @@ for i in range(0, 10):
 # delay a bit
 time.sleep(2)
 
+print("Stopping simulation")
 # stop the simulation:
 sim.simxStopSimulation(clientID,sim.simx_opmode_blocking)
 
@@ -132,6 +139,7 @@ sim.simxStopSimulation(clientID,sim.simx_opmode_blocking)
 sim.simxGetPingTime(clientID)
 
 # Now close the connection to CoppeliaSim:
+print("Closing connection with remote server")
 sim.simxFinish(clientID)
 
 ####
