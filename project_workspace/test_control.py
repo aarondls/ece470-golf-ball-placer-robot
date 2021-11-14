@@ -1,4 +1,3 @@
-from iktest import M, S
 import sim # access all the VREP elements
 import sys # for stopping at errors
 import time # for time/sleeping
