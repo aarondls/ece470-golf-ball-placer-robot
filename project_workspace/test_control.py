@@ -1,10 +1,44 @@
+from iktest import M, S
 import sim # access all the VREP elements
 import sys # for stopping at errors
 import time # for time/sleeping
 import numpy as np
 import os
+import modern_robotics as mr
 
 #### Helper functions
+
+def CalculateHomeAndScrewAxes():
+    global M
+    global S
+
+    M = np.array([  [ 1,  0,  0,  -0.192],
+                    [ 0,  1,  0,  0  ],
+                    [ 0,  0,  1,  0.692 ],
+                    [ 0,  0,  0,  1      ]])
+    w1 = np.array([0,0,1])
+    w2 = np.array([-1,0,0])
+    w3 = np.array([-1,0,0])
+    w4 = np.array([-1,0,0])
+    w5 = np.array([0,0,1])
+    w6 = np.array([-1,0,0])
+    v1 = np.cross(-w1, np.array([0, 0, 0]))
+    v2 = np.cross(-w2, np.array([0, 0, 0.152]))
+    v3 = np.cross(-w3, np.array([0, 0, 0.396]))
+    v4 = np.cross(-w4, np.array([0, 0, 0.609]))
+    v5 = np.cross(-w5, np.array([-0.110, 0, 0]))
+    v6 = np.cross(-w6, np.array([0, 0, 0.692]))
+
+    S1 = np.concatenate((w1, v1), axis=None)
+    S2 = np.concatenate((w2, v2), axis=None)
+    S3 = np.concatenate((w3, v3), axis=None)
+    S4 = np.concatenate((w4, v4), axis=None)
+    S5 = np.concatenate((w5, v5), axis=None)
+    S6 = np.concatenate((w6, v6), axis=None)
+
+    S = np.array([S1, S2, S3, S4, S5, S6]).T
+
+    return M, S
 
 def GetJointAngles(handle_arr):
     # handles indexed from 1 to 6 for joints 1 to 6
@@ -33,6 +67,30 @@ def GetProxSensorDist(handle_arr):
         sys.exit('Unable to get prox sensor readings')
     return detect_state, detected_point
 
+def VacuumGrip(on):
+    sim.simxSetIntegerSignal(clientID, "BaxterVacuumCup_active", on, sim.simx_opmode_oneshot)
+
+def CalculateFK(joint_angles):
+    T_01 = mr.FKinSpace(M, S, joint_angles)
+    return T_01
+
+def MoveRobotUsingIK(position_list, handle_arr):
+    print("Commanding robot to move to ", position_list)
+    initial_theta_list = np.array([0,0,0,0,0,0])
+
+    pose = np.array([   [0, -1, 0, position_list[0]],
+                        [0, 0, -1, position_list[1]],
+                        [1, 0, 0, position_list[2]],
+                        [0, 0, 0, 1]])
+    
+    joint_angles, success = mr.IKinSpace(S, M, pose, initial_theta_list, 0.01, 0.001)
+    
+    print(success, joint_angles)
+    print("Forward kinematics of calculated joint angles: ")
+    print(CalculateFK(joint_angles))
+
+    SetJointAngles(handle_arr, joint_angles)
+    return joint_angles
 ####
 
 #### Establish connections with coppelia sim
@@ -100,28 +158,74 @@ time.sleep(2)
 
 #### Do things in simulation
 
+# Calculate the home position and screw axes
+CalculateHomeAndScrewAxes()
+
 # Attempt to spawn sphere
-print("Spawning golf ball")
-sphere_path = os.path.abspath(os.getcwd()) + '/sphere_sample.ttm'
+# print("Spawning golf ball")
+# sphere_path = os.path.abspath(os.getcwd()) + '/sphere_correct_loc.ttm'
+# result, sphere_handle = sim.simxLoadModel(clientID, sphere_path, 0, sim.simx_opmode_oneshot_wait)
+# if result != sim.simx_return_ok:
+# 	sys.exit('Failed to get object handle for instantiated sphere')
+
+print("Spawning box sample")
+sphere_path = os.path.abspath(os.getcwd()) + '/box_sample.ttm'
 result, sphere_handle = sim.simxLoadModel(clientID, sphere_path, 0, sim.simx_opmode_oneshot_wait)
 if result != sim.simx_return_ok:
-	sys.exit('Failed to get object handle for instantiated sphere')
+	sys.exit('Failed to get object handle for instantiated box')
 
-# Attempt to move UR3 to a set of joint angles
-print("Moving UR3 robot arm")
-desired_joint_angles = np.array([0,0,-0.5*np.pi,0.5*np.pi,-0.5*np.pi,-0.5*np.pi])
-SetJointAngles(handle_arr, desired_joint_angles)
-
+# # Attempt to move UR3 to a set of joint angles
+# print("Moving UR3 robot arm")
+# desired_joint_angles = np.array([90*np.pi/180,-30*np.pi/180,-60*np.pi/180,0,90*np.pi/180,0])
+# SetJointAngles(handle_arr, desired_joint_angles)
 # delay to see position
-time.sleep(2)
+# time.sleep(5)
 
-# attempt to read prox sensor
-print('Attempting to read prox sensor')
-print("Boolean represents if object is detected, and the three value array are the xyz coordinates of detected object")
-for i in range(0, 15):
-    detected_state, detected_point = GetProxSensorDist(handle_arr)
-    print(detected_state, detected_point)
+detected_state, detected_point = GetProxSensorDist(handle_arr)
+while (detected_state != 1):
+    print("Object not detected")
     time.sleep(1)
+    detected_state, detected_point = GetProxSensorDist(handle_arr)
+
+print("Object detected")
+
+
+result, sphere_position_list = sim.simxGetObjectPosition(clientID, sphere_handle, handle_arr[0], sim.simx_opmode_blocking)
+print("Attempting to get pos relative to base of robot")
+# print(sphere_position_list)
+if result != sim.simx_return_ok:
+	sys.exit('Failed to get object handle for instantiated sphere')
+print("Object location with respect to base of robot is ", sphere_position_list)
+
+sphere_position_list_pick_level = [sphere_position_list[0], sphere_position_list[1], sphere_position_list[2]+0.145]
+sphere_position_list_above = [sphere_position_list[0], sphere_position_list[1], sphere_position_list[2] + 0.2]
+
+MoveRobotUsingIK(sphere_position_list_above, handle_arr)
+MoveRobotUsingIK(sphere_position_list_pick_level, handle_arr)
+
+# print("Spawning box sample 2")
+# sphere_path = os.path.abspath(os.getcwd()) + '/box_sample.ttm'
+# result, sphere_handle = sim.simxLoadModel(clientID, sphere_path, 0, sim.simx_opmode_oneshot_wait)
+# if result != sim.simx_return_ok:
+# 	sys.exit('Failed to get object handle for instantiated box')
+
+# turn on vacuum
+VacuumGrip(1)
+MoveRobotUsingIK(sphere_position_list_above, handle_arr)
+
+dest_position_list_pick_up_level = [sphere_position_list[0]-0.2, sphere_position_list[1], sphere_position_list[2]+0.145]
+dest_position_list_above = [sphere_position_list[0]-0.2, sphere_position_list[1]+0.1, sphere_position_list[2]+0.2]
+
+MoveRobotUsingIK(dest_position_list_pick_up_level, handle_arr)
+
+# turn off vacuum
+VacuumGrip(0)
+MoveRobotUsingIK(dest_position_list_above, handle_arr)
+
+time.sleep(5)
+
+
+# time.sleep(10)
 
 ####
 
