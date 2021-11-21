@@ -55,7 +55,7 @@ def SetJointAngles(handle_arr, joint_angles):
     # handle_arr indexed from 1 to 6 for joints 1 to 6
     for i in range(0, 6):
         sim.simxSetJointTargetPosition(clientID, handle_arr[i+1], joint_angles[i], sim.simx_opmode_oneshot)
-        time.sleep(0.5) # slight delay
+        # time.sleep(0.5) # slight delay
     pass
 
 def GetProxSensorDist(handle_arr):
@@ -73,23 +73,62 @@ def CalculateFK(joint_angles):
     T_01 = mr.FKinSpace(M, S, joint_angles)
     return T_01
 
+# assumes orientation that the end-effector is pointing straight down the space z axis
+def CalculateJointConfiguration(position_list, handle_arr):
+    # try using current position as initial_theta_list
+    # somehow, only 0 starting guess works
+    initial_theta_list_raw = GetJointAngles(handle_arr)
+    initial_theta_list = [0,0,0,0,0,0]
+
+    pose = np.array([[0, -1, 0, position_list[0]],
+                     [0, 0, -1, position_list[1]],
+                     [1, 0, 0, position_list[2]],
+                     [0, 0, 0, 1]])
+    joint_angles, success = mr.IKinSpace(S, M, pose, initial_theta_list, 0.01, 0.001)
+
+    if not(success):
+        print("No solution found")
+        joint_angles = initial_theta_list_raw
+        
+    print(success, joint_angles)
+    # print("Forward kinematics of calculated joint angles: ")
+    # print(CalculateFK(joint_angles))
+
+    return joint_angles
+
+
+# assumes orientation that the end-effector is pointing straight down the space z axis
 def MoveRobotUsingIK(position_list, handle_arr):
     print("Commanding robot to move to ", position_list)
-    initial_theta_list = np.array([0,0,0,0,0,0])
 
-    pose = np.array([   [0, -1, 0, position_list[0]],
-                        [0, 0, -1, position_list[1]],
-                        [1, 0, 0, position_list[2]],
+    desired_joint_angles = CalculateJointConfiguration(position_list, handle_arr)
+
+    SetJointAngles(handle_arr, desired_joint_angles)
+    return desired_joint_angles
+
+
+def MoveRobotStraightLine(desired_position_list, total_time, handle_arr):
+    print("Commanding robot to move to ", desired_position_list)
+
+    # get current position and put it in SE(3) form
+    current_joint_angles = GetJointAngles(handle_arr)
+    X_start = CalculateFK(current_joint_angles)
+
+    X_desired = np.array([[0, -1, 0, desired_position_list[0]],
+                        [0, 0, -1, desired_position_list[1]],
+                        [1, 0, 0, desired_position_list[2]],
                         [0, 0, 0, 1]])
-    
-    joint_angles, success = mr.IKinSpace(S, M, pose, initial_theta_list, 0.01, 0.001)
-    
-    print(success, joint_angles)
-    print("Forward kinematics of calculated joint angles: ")
-    print(CalculateFK(joint_angles))
 
-    SetJointAngles(handle_arr, joint_angles)
-    return joint_angles
+    # elapsed time between each matrix turns out to total time / (total matrices count - 1)
+    elapsed_time = 0.1
+    total_matrix_count = (total_time / elapsed_time) + 1
+    straight_line_traj = mr.CartesianTrajectory(X_start, X_desired, total_time, total_matrix_count, 5)
+
+    for current_se3_position in straight_line_traj:
+        current_desired_position_list = [current_se3_position[0][3], current_se3_position[1][3], current_se3_position[2][3]]
+        print(current_desired_position_list)
+        MoveRobotUsingIK(current_desired_position_list, handle_arr)
+        # time.sleep(0.1)
 ####
 
 #### Establish connections with coppelia sim
@@ -150,6 +189,13 @@ sim.simxSynchronous(clientID, True)
 print("Starting simulation")
 sim.simxStartSimulation(clientID, sim.simx_opmode_oneshot)
 
+# Calculate the home position and screw axes
+CalculateHomeAndScrewAxes()
+
+# move to start position
+SetJointAngles(handle_arr, [0,0,0,0,0,0])
+MoveRobotUsingIK([0,-0.3,0.4], handle_arr)
+
 # Wait for things a bit
 time.sleep(2)
 
@@ -157,28 +203,21 @@ time.sleep(2)
 
 #### Do things in simulation
 
-# Calculate the home position and screw axes
-CalculateHomeAndScrewAxes()
+# Attempt to spawn golf tee
+print("Spawning golf tee")
+tee_path = os.path.abspath(os.getcwd()) + '/golf_tee_correct_loc.ttm'
+result, tee_handle = sim.simxLoadModel(clientID, tee_path, 0, sim.simx_opmode_oneshot_wait)
+if result != sim.simx_return_ok:
+	sys.exit('Failed to get object handle for instantiated golf tee')
+
 
 # Attempt to spawn sphere
-# print("Spawning golf ball")
-# sphere_path = os.path.abspath(os.getcwd()) + '/sphere_correct_loc.ttm'
-# result, sphere_handle = sim.simxLoadModel(clientID, sphere_path, 0, sim.simx_opmode_oneshot_wait)
-# if result != sim.simx_return_ok:
-# 	sys.exit('Failed to get object handle for instantiated sphere')
-
-print("Spawning box sample")
-sphere_path = os.path.abspath(os.getcwd()) + '/box_sample.ttm'
+print("Spawning golf ball")
+sphere_path = os.path.abspath(os.getcwd()) + '/sphere_correct_loc.ttm'
 result, sphere_handle = sim.simxLoadModel(clientID, sphere_path, 0, sim.simx_opmode_oneshot_wait)
 if result != sim.simx_return_ok:
-	sys.exit('Failed to get object handle for instantiated box')
+	sys.exit('Failed to get object handle for instantiated sphere')
 
-# # Attempt to move UR3 to a set of joint angles
-# print("Moving UR3 robot arm")
-# desired_joint_angles = np.array([90*np.pi/180,-30*np.pi/180,-60*np.pi/180,0,90*np.pi/180,0])
-# SetJointAngles(handle_arr, desired_joint_angles)
-# delay to see position
-# time.sleep(5)
 
 detected_state, detected_point = GetProxSensorDist(handle_arr)
 while (detected_state != 1):
@@ -190,41 +229,50 @@ print("Object detected")
 
 
 result, sphere_position_list = sim.simxGetObjectPosition(clientID, sphere_handle, handle_arr[0], sim.simx_opmode_blocking)
-print("Attempting to get pos relative to base of robot")
+print("Attempting to get pos of sphere relative to base of robot")
 # print(sphere_position_list)
 if result != sim.simx_return_ok:
-	sys.exit('Failed to get object handle for instantiated sphere')
+	sys.exit('Failed to get object position for instantiated sphere')
 print("Object location with respect to base of robot is ", sphere_position_list)
 
-sphere_position_list_pick_level = [sphere_position_list[0], sphere_position_list[1], sphere_position_list[2]+0.145]
+sphere_position_list_pick_level = [sphere_position_list[0], sphere_position_list[1], sphere_position_list[2]+0.146]
 sphere_position_list_above = [sphere_position_list[0], sphere_position_list[1], sphere_position_list[2] + 0.2]
 
-MoveRobotUsingIK(sphere_position_list_above, handle_arr)
-MoveRobotUsingIK(sphere_position_list_pick_level, handle_arr)
-
-# print("Spawning box sample 2")
-# sphere_path = os.path.abspath(os.getcwd()) + '/box_sample.ttm'
-# result, sphere_handle = sim.simxLoadModel(clientID, sphere_path, 0, sim.simx_opmode_oneshot_wait)
-# if result != sim.simx_return_ok:
-# 	sys.exit('Failed to get object handle for instantiated box')
+MoveRobotStraightLine(sphere_position_list_above, 1, handle_arr)
+MoveRobotStraightLine(sphere_position_list_pick_level, 1, handle_arr)
 
 # turn on vacuum
 VacuumGrip(1)
-MoveRobotUsingIK(sphere_position_list_above, handle_arr)
+MoveRobotStraightLine(sphere_position_list_above, 1, handle_arr)
 
-dest_position_list_pick_up_level = [sphere_position_list[0]-0.2, sphere_position_list[1], sphere_position_list[2]+0.145]
-dest_position_list_above = [sphere_position_list[0]-0.2, sphere_position_list[1]+0.1, sphere_position_list[2]+0.2]
+result, tee_position_list = sim.simxGetObjectPosition(clientID, tee_handle, handle_arr[0], sim.simx_opmode_blocking)
+print("Attempting to get pos of golf tee to base of robot")
+if result != sim.simx_return_ok:
+	sys.exit('Failed to get object position for instantiated golf tee')
+print("Tee location with respect to base of robot is ", tee_position_list)
 
-MoveRobotUsingIK(dest_position_list_pick_up_level, handle_arr)
+dest_position_list_pick_up_level = [tee_position_list[0], tee_position_list[1], tee_position_list[2]+0.225]
+dest_position_list_above = [tee_position_list[0], tee_position_list[1], tee_position_list[2]+0.25]
+
+MoveRobotStraightLine(dest_position_list_above, 2, handle_arr)
+MoveRobotStraightLine(dest_position_list_pick_up_level, 1, handle_arr)
 
 # turn off vacuum
 VacuumGrip(0)
-MoveRobotUsingIK(dest_position_list_above, handle_arr)
 
-time.sleep(5)
+time.sleep(0.018)
 
+print("Instantiating static sphere")
+static_sphere_path = os.path.abspath(os.getcwd()) + '/golf_ball_correct_loc_static.ttm'
 
-# time.sleep(10)
+sim.simxRemoveModel(clientID, sphere_handle, sim.simx_opmode_oneshot_wait)
+
+result, static_sphere_handle = sim.simxLoadModel(clientID, static_sphere_path, 0, sim.simx_opmode_oneshot_wait)
+if result != sim.simx_return_ok:
+	sys.exit('Failed to get object handle for instantiated static sphere')
+
+MoveRobotStraightLine(dest_position_list_above, 1, handle_arr)
+
 
 ####
 
