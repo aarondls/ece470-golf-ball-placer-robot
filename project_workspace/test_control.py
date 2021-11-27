@@ -4,6 +4,7 @@ import time # for time/sleeping
 import numpy as np
 import os
 import modern_robotics as mr
+import math
 
 #### Helper functions
 
@@ -62,7 +63,7 @@ def GetProxSensorDist(prox_handle):
     result, detect_state, detected_point, detected_object_handle, detected_surace_norm_vec = sim.simxReadProximitySensor(clientID, prox_handle, sim.simx_opmode_buffer)
     if result!=sim.simx_return_ok:
         sys.exit('Unable to get prox sensor readings')
-    return detect_state, detected_point
+    return detect_state, detected_object_handle
 
 def VacuumGrip(on):
     sim.simxSetIntegerSignal(clientID, "BaxterVacuumCup_active", on, sim.simx_opmode_oneshot)
@@ -121,11 +122,81 @@ def MoveStraightCartessian(desired_position_list, total_time, handle_arr):
     straight_line_traj = mr.CartesianTrajectory(X_start, X_desired, total_time, total_matrix_count, 5)
 
     for current_se3_pose in straight_line_traj:
-        MoveToPoseUsingIK(current_se3_pose, handle_arr)
+        new_pose = np.array([[0, -1, 0, current_se3_pose[0][3]],
+                     [0, 0, -1, current_se3_pose[1][3]],
+                     [1, 0, 0, current_se3_pose[2][3]],
+                     [0, 0, 0, 1]])
+
+        # either forcing orientatioon or not is fine
+
+        MoveToPoseUsingIK(new_pose, handle_arr)
         # time.sleep(0.1)
         # no need sleep since calculation takes a while
 
-def MoveStraightJointSpace(desired_pose, total_time, handle_arr):
+# assume all joints have the same joint limit of max velocity and max acceleration
+# returns the min time of movement satisfying joint limits,
+# and the coefficients a_2,a_3 of the equation s(t)=a_0+...+a_3t^3
+def CubicTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel):
+    # get maximum joint difference for all joints
+    max_theta_diff = np.amax(abs(theta_end-theta_start))
+
+    print(max_theta_diff)
+
+    min_time_from_vel_limit = ( (3.0 / (2*max_vel)) * max_theta_diff)
+    min_time_from_accel_limit = (math.sqrt((6.0 / max_accel) * max_theta_diff))
+
+    min_time = min(min_time_from_vel_limit, min_time_from_accel_limit)
+
+    return min_time, (3.0 / (min_time**2)), (-2.0 / (min_time**3))
+
+# assume all joints have the same joint limit of max velocity and max acceleration
+# returns the min time of movement satisfying joint limits,
+# and the coefficients a_3,...,5 of the equation s(t)=a_0+...+a_5t^5
+def QuinticTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel):
+    # get maximum joint difference for all joints
+    max_theta_diff = np.amax(abs(theta_end-theta_start))
+
+    print(max_theta_diff)
+
+    min_time_from_vel_limit = ( (15.0 / (8*max_vel)) * max_theta_diff)
+    min_time_from_accel_limit = (math.sqrt( (10.0 / (math.sqrt(3)*max_accel) ) * max_theta_diff ))
+
+    min_time = min(min_time_from_vel_limit, min_time_from_accel_limit)
+
+    return min_time, (10.0 / (min_time**3)), (-15.0 / (min_time**4)), (6 / (min_time**5))
+
+# uses cubic time scaling
+# comment the other function with quintic time scaling and uncomment this to test cubic time scaling
+# def StraightTrajectoryJointSpace(theta_start, theta_end, max_vel, max_accel, delta_time):
+#     total_time, a_2, a_3 = CubicTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel)
+
+#     num_points = int((total_time/delta_time) + 1)
+#     traj = np.zeros((len(theta_start), num_points))
+#     
+#     for i in range(num_points):
+#         cur_time = delta_time*i
+#         cur_time_scaling = a_2*(cur_time**2) + a_3*(cur_time**3)
+#         traj[:,i] = np.array(theta_start) + cur_time_scaling*(np.array(theta_end) - np.array(theta_start))
+
+#     return np.array(traj).T
+
+# uses quintic time scaling
+# num points is number of theta positions returned in discrete time
+def StraightTrajectoryJointSpace(theta_start, theta_end, max_vel, max_accel, delta_time):
+    total_time, a_3, a_4, a_5 = QuinticTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel)
+
+    num_points = int((total_time/delta_time) + 1)
+    traj = np.zeros((len(theta_start), num_points))
+
+    for i in range(num_points):
+        cur_time = delta_time*i
+        cur_time_scaling = a_3*(cur_time**3) + a_4*(cur_time**4) + a_5*(cur_time**5)
+        traj[:,i] = np.array(theta_start) + cur_time_scaling*(np.array(theta_end) - np.array(theta_start))
+
+    return np.array(traj).T
+
+
+def MoveStraightJointSpace(desired_pose, max_vel, max_accel, handle_arr):
     print("Commanding robot to move to ", desired_pose)
 
     # get current position and put it in SE(3) form
@@ -136,8 +207,10 @@ def MoveStraightJointSpace(desired_pose, total_time, handle_arr):
 
     # elapsed time between each matrix turns out to total time / (total matrices count - 1)
     elapsed_time = 0.1
-    total_matrix_count = (total_time / elapsed_time) + 1
-    straight_line_traj = mr.JointTrajectory(current_joint_angles, desired_joint_angles, total_time, total_matrix_count, 5)
+    # total_matrix_count = (total_time / elapsed_time) + 1
+    # straight_line_traj = mr.JointTrajectory(current_joint_angles, desired_joint_angles, total_time, total_matrix_count, 5)
+    
+    straight_line_traj = StraightTrajectoryJointSpace(current_joint_angles, desired_joint_angles, max_vel, max_accel, elapsed_time)
 
     for current_joint_configuration in straight_line_traj:
         SetJointAngles(handle_arr, current_joint_configuration)
@@ -164,75 +237,96 @@ def SpawnGolfTee(clientID):
 
     return tee_handle
 
-def WaitForGolfBallDetection(prox_handle):
-    detected_state, detected_point = GetProxSensorDist(prox_handle)
+# wait for maximum approx 2 seconds
+def WaitForGolfBallDetection(prox1_handle):
+    detected_state, detected_object_handle = GetProxSensorDist(prox1_handle)
+
+    time_count = 0
     while (detected_state != 1):
+        if time_count > 1:
+            return detect_state, detected_object_handle
         print("Object not detected")
         time.sleep(1)
-        detected_state, detected_point = GetProxSensorDist(prox_handle)
+        time_count += 1
+        detected_state, detected_object_handle = GetProxSensorDist(prox1_handle)
 
     print("Object detected")
 
-# simulate the ball arriving, being moved to the tee, and being hit from the tee
+    return detected_state, detected_object_handle
+
+def WaitForGolfBallHitDetection(prox2_handle):
+    detected_state, detected_object_handle = GetProxSensorDist(prox2_handle)
+    while (detected_state == 1):
+        print("Object detected")
+        time.sleep(1)
+        detected_state, detected_object_handle = GetProxSensorDist(prox2_handle)
+
+    print("Object gone")
+
+    return detected_object_handle
+
+# simulate moving ball from spawn location to tee, until no more balls are detected
 def SimulateShotCycle(clientID, handle_arr):
+    tee_handle = handle_arr[10]
 
-    # Attempt to spawn golf ball
-    golf_ball_handle = SpawmDynamicGolfBall(clientID)
-    tee_handle = handle_arr[9]
+    # Don't proceed if no ball is detected by the sensor
+    golf_ball_detected, golf_ball_handle = WaitForGolfBallDetection(handle_arr[8])
 
-    # Don't proceed until the ball is detected by the sensor
-    WaitForGolfBallDetection(handle_arr[8])
+    while (golf_ball_detected == 1):
+        result, golf_ball_position_list = sim.simxGetObjectPosition(clientID, golf_ball_handle, handle_arr[0], sim.simx_opmode_blocking)
+        print("Attempting to get pos of golf ball relative to base of robot")
+        if result != sim.simx_return_ok:
+            sys.exit('Failed to get object position for instantiated golf ball')
+        print("Object location with respect to base of robot is ", golf_ball_position_list)
 
+        golf_ball_position_list_pick_level = [golf_ball_position_list[0], golf_ball_position_list[1], golf_ball_position_list[2]+0.146]
+        golf_ball_position_list_above = [golf_ball_position_list[0], golf_ball_position_list[1], golf_ball_position_list[2] + 0.2]
 
-    result, golf_ball_position_list = sim.simxGetObjectPosition(clientID, golf_ball_handle, handle_arr[0], sim.simx_opmode_blocking)
-    print("Attempting to get pos of golf ball relative to base of robot")
-    if result != sim.simx_return_ok:
-        sys.exit('Failed to get object position for instantiated golf ball')
-    print("Object location with respect to base of robot is ", golf_ball_position_list)
+        MoveStraightCartessian(golf_ball_position_list_above, 1, handle_arr)
+        MoveStraightCartessian(golf_ball_position_list_pick_level, 1, handle_arr)
 
-    golf_ball_position_list_pick_level = [golf_ball_position_list[0], golf_ball_position_list[1], golf_ball_position_list[2]+0.146]
-    golf_ball_position_list_above = [golf_ball_position_list[0], golf_ball_position_list[1], golf_ball_position_list[2] + 0.2]
+        # turn on vacuum
+        VacuumGrip(1)
+        MoveStraightCartessian(golf_ball_position_list_above, 1, handle_arr)
 
-    MoveStraightCartessian(golf_ball_position_list_above, 1, handle_arr)
-    MoveStraightCartessian(golf_ball_position_list_pick_level, 1, handle_arr)
+        result, tee_position_list = sim.simxGetObjectPosition(clientID, tee_handle, handle_arr[0], sim.simx_opmode_blocking)
+        print("Attempting to get pos of golf tee to base of robot")
+        if result != sim.simx_return_ok:
+            sys.exit('Failed to get object position for instantiated golf tee')
+        print("Tee location with respect to base of robot is ", tee_position_list)
 
-    # turn on vacuum
-    VacuumGrip(1)
-    MoveStraightCartessian(golf_ball_position_list_above, 1, handle_arr)
+        dest_position_list_pick_up_level = [tee_position_list[0], tee_position_list[1], tee_position_list[2]+0.225]
+        dest_position_list_above = [tee_position_list[0], tee_position_list[1], tee_position_list[2]+0.25]
 
-    result, tee_position_list = sim.simxGetObjectPosition(clientID, tee_handle, handle_arr[0], sim.simx_opmode_blocking)
-    print("Attempting to get pos of golf tee to base of robot")
-    if result != sim.simx_return_ok:
-        sys.exit('Failed to get object position for instantiated golf tee')
-    print("Tee location with respect to base of robot is ", tee_position_list)
+        MoveStraightCartessian(dest_position_list_above, 2, handle_arr)
+        MoveStraightCartessian(dest_position_list_pick_up_level, 1, handle_arr)
 
-    dest_position_list_pick_up_level = [tee_position_list[0], tee_position_list[1], tee_position_list[2]+0.225]
-    dest_position_list_above = [tee_position_list[0], tee_position_list[1], tee_position_list[2]+0.25]
+        # turn off vacuum
+        VacuumGrip(0)
 
-    MoveStraightCartessian(dest_position_list_above, 2, handle_arr)
-    MoveStraightCartessian(dest_position_list_pick_up_level, 1, handle_arr)
+        # time.sleep(0.018)
+        time.sleep(0.03)
 
-    # turn off vacuum
-    VacuumGrip(0)
+        print("Instantiating static sphere")
+        static_sphere_path = os.path.abspath(os.getcwd()) + '/golf_ball_correct_loc_static.ttm'
 
-    # time.sleep(0.018)
-    time.sleep(0.03)
+        sim.simxRemoveModel(clientID, golf_ball_handle, sim.simx_opmode_oneshot_wait)
 
-    print("Instantiating static sphere")
-    static_sphere_path = os.path.abspath(os.getcwd()) + '/golf_ball_correct_loc_static.ttm'
+        result, static_sphere_handle = sim.simxLoadModel(clientID, static_sphere_path, 0, sim.simx_opmode_oneshot_wait)
+        if result != sim.simx_return_ok:
+            sys.exit('Failed to get object handle for instantiated static sphere')
 
-    sim.simxRemoveModel(clientID, golf_ball_handle, sim.simx_opmode_oneshot_wait)
+        MoveStraightCartessian(dest_position_list_above, 1, handle_arr)
 
-    result, static_sphere_handle = sim.simxLoadModel(clientID, static_sphere_path, 0, sim.simx_opmode_oneshot_wait)
-    if result != sim.simx_return_ok:
-        sys.exit('Failed to get object handle for instantiated static sphere')
+        MoveStraightCartessian([0,-0.3,0.4], 1, handle_arr)
 
-    MoveStraightCartessian(dest_position_list_above, 1, handle_arr)
+        # hit the golf ball (delete it)
+        sim.simxRemoveModel(clientID, static_sphere_handle, sim.simx_opmode_oneshot_wait)
 
-    MoveStraightCartessian([0,-0.3,0.4], 1, handle_arr)
+        # wait for golf ball to be detected as gone
+        WaitForGolfBallHitDetection(handle_arr[9])
 
-    # hit the golf ball (delete it)
-    sim.simxRemoveModel(clientID, static_sphere_handle, sim.simx_opmode_oneshot_wait)
+        golf_ball_detected, golf_ball_handle = WaitForGolfBallDetection(handle_arr[8])
 
 ####
 
@@ -251,7 +345,7 @@ else:
 
 #### Get handles to all objects
 
-handle_arr = [None] * 10 # here, 0 is base handle, 1-6 are joint handles, and 7 is end effector handle, and 8 is prox sensor, 9 is golf ball
+handle_arr = [None] * 11 # here, 0 is base handle, 1-6 are joint handles, and 7 is end effector handle, and 8, 9 is prox sensor, 10 is golf tee
 
 # Get "handle" to the base of robot
 result, handle_arr[0] = sim.simxGetObjectHandle(clientID, 'UR3_link1_visible', sim.simx_opmode_blocking)
@@ -272,13 +366,18 @@ if result != sim.simx_return_ok:
 	sys.exit('Failed to get object handle for end effector')
 
 
-# Get handle of proximity sensor
+# Get handle of proximity sensors
 result, handle_arr[8] = sim.simxGetObjectHandle(clientID, 'Proximity_sensor_1', sim.simx_opmode_blocking)
 if result != sim.simx_return_ok:
-	sys.exit('Failed to get object handle for proximity sensor')
+	sys.exit('Failed to get object handle for proximity sensor 1')
+
+result, handle_arr[9] = sim.simxGetObjectHandle(clientID, 'Proximity_sensor_2', sim.simx_opmode_blocking)
+if result != sim.simx_return_ok:
+	sys.exit('Failed to get object handle for proximity sensor 2')
 
 # attempt to do first reading to prepare next readings
 result, detect_state, detected_point, detected_object_handle, detected_surace_norm_vec = sim.simxReadProximitySensor(clientID, handle_arr[8], sim.simx_opmode_streaming)
+result, detect_state, detected_point, detected_object_handle, detected_surace_norm_vec = sim.simxReadProximitySensor(clientID, handle_arr[9], sim.simx_opmode_streaming)
 
 print("Sucessfully retrieved handles")
 
@@ -302,7 +401,7 @@ SetJointAngles(handle_arr, [0,0,0,0,0,0])
 MoveStraightJointSpace(np.array([[0, -1, 0, 0],
                      [0, 0, -1, -0.3],
                      [1, 0, 0, 0.4],
-                     [0, 0, 0, 1]]), 1, handle_arr)
+                     [0, 0, 0, 1]]), 4, 4, handle_arr)
 
 
 time.sleep(2)
@@ -312,14 +411,21 @@ time.sleep(2)
 #### Do things in simulation
 
 # Attempt to spawn golf tee
-handle_arr[9] = SpawnGolfTee(clientID)
+handle_arr[10] = SpawnGolfTee(clientID)
 
-# run single shot cycle
-SimulateShotCycle(clientID, handle_arr)
+# spawn single golf ball
+# SpawmDynamicGolfBall(clientID)
 
-# run shot cycle 5 times
-for i in range(5):
-    SimulateShotCycle(clientID, handle_arr)
+# run shot cycle (moving and hitting the ball)
+# SimulateShotCycle(clientID, handle_arr)
+
+# spawn multiple golf balls
+# SpawmDynamicGolfBall(clientID)
+# SpawmDynamicGolfBall(clientID)
+# SpawmDynamicGolfBall(clientID)
+
+# run shot cycke
+# SimulateShotCycle(clientID, handle_arr)
 
 ####
 
