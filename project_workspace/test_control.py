@@ -145,7 +145,7 @@ def CubicTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel):
     min_time_from_vel_limit = ( (3.0 / (2*max_vel)) * max_theta_diff)
     min_time_from_accel_limit = (math.sqrt((6.0 / max_accel) * max_theta_diff))
 
-    min_time = min(min_time_from_vel_limit, min_time_from_accel_limit)
+    min_time = max(min_time_from_vel_limit, min_time_from_accel_limit)
 
     return min_time, (3.0 / (min_time**2)), (-2.0 / (min_time**3))
 
@@ -161,7 +161,7 @@ def QuinticTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel):
     min_time_from_vel_limit = ( (15.0 / (8*max_vel)) * max_theta_diff)
     min_time_from_accel_limit = (math.sqrt( (10.0 / (math.sqrt(3)*max_accel) ) * max_theta_diff ))
 
-    min_time = min(min_time_from_vel_limit, min_time_from_accel_limit)
+    min_time = max(min_time_from_vel_limit, min_time_from_accel_limit)
 
     return min_time, (10.0 / (min_time**3)), (-15.0 / (min_time**4)), (6 / (min_time**5))
 
