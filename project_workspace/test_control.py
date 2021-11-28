@@ -140,8 +140,6 @@ def CubicTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel):
     # get maximum joint difference for all joints
     max_theta_diff = np.amax(abs(theta_end-theta_start))
 
-    print(max_theta_diff)
-
     min_time_from_vel_limit = ( (3.0 / (2*max_vel)) * max_theta_diff)
     min_time_from_accel_limit = (math.sqrt((6.0 / max_accel) * max_theta_diff))
 
@@ -156,14 +154,38 @@ def QuinticTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel):
     # get maximum joint difference for all joints
     max_theta_diff = np.amax(abs(theta_end-theta_start))
 
-    print(max_theta_diff)
-
     min_time_from_vel_limit = ( (15.0 / (8*max_vel)) * max_theta_diff)
     min_time_from_accel_limit = (math.sqrt( (10.0 / (math.sqrt(3)*max_accel) ) * max_theta_diff ))
 
     min_time = max(min_time_from_vel_limit, min_time_from_accel_limit)
 
     return min_time, (10.0 / (min_time**3)), (-15.0 / (min_time**4)), (6 / (min_time**5))
+
+# assume all joints have the same joint limit of max velocity and max acceleration
+# if v^2/a >= 1 for one or more joints, then it results in bang bang motion profile
+# for all joints. this is because the same time scaling is applied to all joints
+# to avoid slow computation overhead and extra space for computing separate time
+# scalings for each joint. To avoid bang bang motion (even on one joint), the 
+# condition v^2/a<1 must be satisfied for all joints.
+# returns the minimum motion time possible, the parameters v and a of trapezoidal
+# time scaling
+def TrapezoidalTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel):
+    # check the condition v^2/a<1 
+    max_theta_diff = np.amax(abs(theta_end-theta_start))
+    v_min_possible = max_vel/max_theta_diff
+    a_min_possible = max_accel/max_theta_diff
+    # min_theta_diff = np.amin(abs(theta_end-theta_start))
+    # print(min_theta_diff)
+    # v_max_possible = max_vel/min_theta_diff
+    # a_max_possible = max_accel/min_theta_diff
+    frac_vsqovera = (v_min_possible**2) / a_min_possible
+    if frac_vsqovera >= 1:
+        raise Exception('Bad limits in trapezoidal time scaling. Bang bang motion will happen.')
+
+    # now find minimal possible time T for all joints
+    min_time_possible = (max_theta_diff / max_vel) + (max_vel/max_accel)
+
+    return min_time_possible, v_min_possible, a_min_possible
 
 # uses cubic time scaling
 # comment the other function with quintic time scaling and uncomment this to test cubic time scaling
@@ -182,18 +204,45 @@ def QuinticTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel):
 
 # uses quintic time scaling
 # num points is number of theta positions returned in discrete time
+# def StraightTrajectoryJointSpace(theta_start, theta_end, max_vel, max_accel, delta_time):
+#     total_time, a_3, a_4, a_5 = QuinticTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel)
+
+#     num_points = int((total_time/delta_time) + 1)
+#     traj = np.zeros((len(theta_start), num_points))
+
+#     for i in range(num_points):
+#         cur_time = delta_time*i
+#         cur_time_scaling = a_3*(cur_time**3) + a_4*(cur_time**4) + a_5*(cur_time**5)
+#         # print(cur_time_scaling)
+#         traj[:,i] = np.array(theta_start) + cur_time_scaling*(np.array(theta_end) - np.array(theta_start))
+
+#     return np.array(traj).T
+
+# uses trapezoidal time scaling
 def StraightTrajectoryJointSpace(theta_start, theta_end, max_vel, max_accel, delta_time):
-    total_time, a_3, a_4, a_5 = QuinticTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel)
+    total_time, v, a = TrapezoidalTimeScalingWithLimits(theta_start, theta_end, max_vel, max_accel)
 
     num_points = int((total_time/delta_time) + 1)
     traj = np.zeros((len(theta_start), num_points))
 
+    cur_time_scaling = 0
+
     for i in range(num_points):
         cur_time = delta_time*i
-        cur_time_scaling = a_3*(cur_time**3) + a_4*(cur_time**4) + a_5*(cur_time**5)
+        # check piecewise time scaling
+        if cur_time <= v/a:
+            cur_time_scaling = 1.0/2.0 * a * cur_time**2
+        elif cur_time < total_time-v/a:
+            cur_time_scaling = v*cur_time - (v**2 / (2*a))
+        elif cur_time <= total_time:
+            cur_time_scaling = (2*a*v*total_time - 2*v**2 - (a**2)*(cur_time-total_time)**2) / (2*a) 
+        
         traj[:,i] = np.array(theta_start) + cur_time_scaling*(np.array(theta_end) - np.array(theta_start))
 
+    cur_time = delta_time*num_points
+
     return np.array(traj).T
+
 
 
 def MoveStraightJointSpace(desired_pose, max_vel, max_accel, handle_arr):
@@ -206,7 +255,7 @@ def MoveStraightJointSpace(desired_pose, max_vel, max_accel, handle_arr):
     desired_joint_angles = CalculateJointConfiguration(desired_pose, [0,0,0,0,0,0], handle_arr)
 
     # elapsed time between each matrix turns out to total time / (total matrices count - 1)
-    elapsed_time = 0.1
+    elapsed_time = 0.01
     # total_matrix_count = (total_time / elapsed_time) + 1
     # straight_line_traj = mr.JointTrajectory(current_joint_angles, desired_joint_angles, total_time, total_matrix_count, 5)
     
@@ -282,7 +331,11 @@ def SimulateShotCycle(clientID, handle_arr):
         golf_ball_position_list_pick_level = [golf_ball_position_list[0], golf_ball_position_list[1], golf_ball_position_list[2]+0.146]
         golf_ball_position_list_above = [golf_ball_position_list[0], golf_ball_position_list[1], golf_ball_position_list[2] + 0.2]
 
-        MoveStraightCartessian(golf_ball_position_list_above, 1, handle_arr)
+        # MoveStraightCartessian(golf_ball_position_list_above, 1, handle_arr)
+        MoveStraightJointSpace(np.array([[0, -1, 0, golf_ball_position_list_above[0]],
+                     [0, 0, -1, golf_ball_position_list_above[1]],
+                     [1, 0, 0, golf_ball_position_list_above[2]],
+                     [0, 0, 0, 1]]), 1.0, 4.0, handle_arr)
         MoveStraightCartessian(golf_ball_position_list_pick_level, 1, handle_arr)
 
         # turn on vacuum
@@ -318,7 +371,11 @@ def SimulateShotCycle(clientID, handle_arr):
 
         MoveStraightCartessian(dest_position_list_above, 1, handle_arr)
 
-        MoveStraightCartessian([0,-0.3,0.4], 1, handle_arr)
+        # MoveStraightCartessian([0,-0.3,0.4], 1, handle_arr)
+        MoveStraightJointSpace(np.array([[0, -1, 0, 0],
+                            [0, 0, -1, -0.3],
+                            [1, 0, 0, 0.4],
+                            [0, 0, 0, 1]]), 1.0, 4.0, handle_arr)
 
         # hit the golf ball (delete it)
         sim.simxRemoveModel(clientID, static_sphere_handle, sim.simx_opmode_oneshot_wait)
@@ -401,7 +458,7 @@ SetJointAngles(handle_arr, [0,0,0,0,0,0])
 MoveStraightJointSpace(np.array([[0, -1, 0, 0],
                      [0, 0, -1, -0.3],
                      [1, 0, 0, 0.4],
-                     [0, 0, 0, 1]]), 4, 4, handle_arr)
+                     [0, 0, 0, 1]]), 1.0, 4.0, handle_arr)
 
 
 time.sleep(2)
@@ -414,10 +471,10 @@ time.sleep(2)
 handle_arr[10] = SpawnGolfTee(clientID)
 
 # spawn single golf ball
-# SpawmDynamicGolfBall(clientID)
+SpawmDynamicGolfBall(clientID)
 
 # run shot cycle (moving and hitting the ball)
-# SimulateShotCycle(clientID, handle_arr)
+SimulateShotCycle(clientID, handle_arr)
 
 # spawn multiple golf balls
 # SpawmDynamicGolfBall(clientID)
